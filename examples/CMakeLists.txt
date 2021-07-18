@@ -23,6 +23,7 @@ add_library(examples_common STATIC
 target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3)
 
 set(EXAMPLES
+  #[[
   cartesian_impedance_control
   communication_test
   echo_robot_state
@@ -38,13 +39,19 @@ set(EXAMPLES
   joint_point_to_point_motion
   motion_with_control
   print_joint_poses
+  ]]
 )
 
+
+#[[
 foreach(example ${EXAMPLES})
   add_executable(${example} ${example}.cpp)
   target_link_libraries(${example} Franka::Franka examples_common Eigen3::Eigen3)
 endforeach()
+]]
 
+
+#[[
 add_executable(leader_TCPIP leader_TCPIP.cpp)
 target_link_libraries(leader_TCPIP ncurses Franka::Franka examples_common Eigen3::Eigen3)
 
@@ -65,6 +72,8 @@ target_link_libraries(Yuan_joint_impedance_control Franka::Franka examples_commo
 
 target_link_libraries(joint_impedance_control Threads::Threads)
 target_link_libraries(motion_with_control Poco::Foundation)
+]]
+
 
 # OpenHaptics
 find_path(OPENHAPTICS_INCLUDE_DIR NAMES HD/hd.h HL/hl.h HDU/hdu.h)
@@ -74,10 +83,19 @@ if(NOT OPENHAPTICS_INCLUDE_DIR)
   return()
 endif(NOT OPENHAPTICS_INCLUDE_DIR)
 
-# SDL2
+# SDL2 (libsdl2-dev)
 find_package(SDL2 REQUIRED)
-include_directories(${SDL2_INCLUDE_DIRS})
+#include_directories(${SDL2_INCLUDE_DIRS})
 
+#SDL2 (2.0.15) plus dependencies (Known issue: ioctl (GFEATURE): Input/output error, when connecting using Bluetooth.
+# If other errors happen, please link the old SDL2 version using above lines)
+set(SDL2
+  /usr/local/lib/libSDL2.a
+  pthread
+  dl
+  rt
+  m
+)
 
 add_executable(OpenHaptics_try OpenHaptics_try.cpp)
 target_link_libraries(OpenHaptics_try HD HDU rt ncurses)
@@ -86,10 +104,13 @@ add_executable(HD_example_CoulombField HD_example_CoulombField.cpp helper.cpp he
 target_link_libraries(HD_example_CoulombField HD HDU rt ncurses GL GLU glut)
 
 add_executable(HD_Franka_Simple_Motion_Mirror HD_Franka_Simple_Motion_Mirror.cpp)
-target_link_libraries(HD_Franka_Simple_Motion_Mirror HD HDU rt ncurses GL GLU glut Franka::Franka examples_common Eigen3::Eigen3 Threads::Threads ${SDL2_LIBRARIES})
+#target_link_libraries(HD_Franka_Simple_Motion_Mirror HD HDU rt ncurses GL GLU glut Franka::Franka examples_common Eigen3::Eigen3 Threads::Threads ${SDL2_LIBRARIES})
+target_link_libraries(HD_Franka_Simple_Motion_Mirror HD HDU rt ncurses GL GLU glut Franka::Franka examples_common Eigen3::Eigen3 Threads::Threads ${SDL2})
 
 add_executable(SDL_Attempt SDL_Attempt.cpp)
-target_link_libraries(SDL_Attempt ${SDL2_LIBRARIES})
+#target_link_libraries(SDL_Attempt ${SDL2_LIBRARIES})
+target_link_libraries(SDL_Attempt ${SDL2})
+
 
 include(GNUInstallDirs)
 install(TARGETS ${EXAMPLES}
