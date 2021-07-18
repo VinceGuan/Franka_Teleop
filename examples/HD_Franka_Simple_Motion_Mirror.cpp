@@ -4,12 +4,14 @@
 /*****************************************************************************
 Author: Yuan (Vincent) Guan
 Email: yuan2.guan@brl.ac.uk / vincentguan@ieee.org
- For questions, comments or bug reports, please send email or check the Github repo at:
-    http:/xxxxxxxxxxxxxxxxxxxxxxxxxxx
+ For questions, comments or bug reports, please send email or check the Github
+ repo at:
+    https://github.com/VinceGuan/Franka_Teleop/tree/main/examples
 File:
   HD_Franks_Simple_Motion_Mirror.cpp
 Description:
-  xxxxxxxxxxxxxxx
+  an example showing how to teleoperate the Franka Panda Robot using 3DSystem
+  Touch haptic device.
 *******************************************************************************/
 
 #include <cstdlib>
