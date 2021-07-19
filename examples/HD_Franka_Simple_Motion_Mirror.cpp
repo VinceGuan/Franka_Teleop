@@ -28,7 +28,7 @@ Description:
 #include <array>
 #include <cmath>
 #include <functional>
-#include <SDL.h>
+#include <SDL2/SDL.h>
 
 #include <Eigen/Dense>
 
@@ -64,6 +64,7 @@ typedef struct
   HDdouble HD_transform[16];
   hduVector3Dd anchor;
   HDboolean isAnchorActive;
+  hduVector3Dd Feedback_Force;
 } HapticState;
 
 /* <Function> */
@@ -76,6 +77,7 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData);
 //double time_now = 0;
 SDL_Event Event;
 HapticState state;
+SDL_Window *window = nullptr;
 
 
 /**
@@ -86,11 +88,29 @@ HapticState state;
  */
 void Check_KeyEvent ()
 {
+  std::cout << "is running1" << std::endl;
   while (isRunning) {
     while (SDL_PollEvent(&Event) != 0) {
       if (Event.type == SDL_KEYDOWN) {
         switch (Event.key.keysym.sym) {
-          case SDLK_q: isRunning = false; break;
+          case SDLK_q:
+            std::cout << "is running2" << SDL_PollEvent(&Event) << std::endl;
+            isRunning = false;
+
+            // TODO: See if can be moved in to the exit handler
+            hdStopScheduler();
+            hdUnschedule(hUpdateDeviceCallback);
+            std::cout << "Finishing ..." << std::endl;
+            if (ghHD != HD_INVALID_HANDLE)
+            {
+              hdDisableDevice(ghHD);
+              ghHD = HD_INVALID_HANDLE;
+            }
+            SDL_DestroyWindow(window);
+            SDL_Quit();
+
+            std::exit(0);
+            break;
         }
       }
     }
@@ -114,7 +134,30 @@ int main(int argc, char** argv)
     return -1;
   }
 
-  std::atexit(exitHandler);
+  // Init a window for display and
+  if(SDL_Init(SDL_INIT_VIDEO) < 0) {
+    std::cout << "SDL Video Initialisation Error: " << SDL_GetError() << std::endl;
+  }
+  else
+  {
+    window = SDL_CreateWindow("A Window Title",SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,640,480,SDL_WINDOW_SHOWN);
+    if (window == nullptr) {
+      std::cout << "SDL Window Initialisation Error: " << SDL_GetError() << std::endl;
+    }
+    else {
+      SDL_UpdateWindowSurface(window);
+    }
+  }
+
+  if (std::atexit(exitHandler) != 0) {
+    std::cout << "Failed to register the Exit Handler" << std::endl;
+  }
+
+  ///////////////////////// <START> Creating new thread ///////////////////////
+  std::thread Check_KeyEvent_thread(Check_KeyEvent);
+  ////////////////////////// <END> Creating new thread ////////////////////////
+
+  // Init HD API and find device
   initHD();
   std::cout << "HDAPI initialised." << std::endl;
 
@@ -146,7 +189,7 @@ int main(int argc, char** argv)
     setDefaultBehavior(robot);
     // load the kinematics and dynamics model
     franka::Model model = robot.loadModel();
-
+    // get the robot initial state
     franka::RobotState initial_state = robot.readOnce();
 
     // equilibrium point is the initial position
@@ -188,10 +231,12 @@ int main(int argc, char** argv)
     double time = 0.0;
     std::array<double, 16> initial_pose;
 
+    ////////////////// <START> Define torque controller callback ////////////////////////
     // define callback for the torque control loop
     std::function<franka::Torques(const franka::RobotState&, franka::Duration)>
         impedance_control_callback = [&](const franka::RobotState& robot_state,
                                          franka::Duration duration) -> franka::Torques {
+
       // get state variables
       std::array<double, 7> coriolis_array = model.coriolis(robot_state);
       std::array<double, 42> jacobian_array =
@@ -213,19 +258,26 @@ int main(int argc, char** argv)
 
       time += duration.toSec();
 
-      //position_d(0) = initial_transform.translation()[0] + 0.0005 * state.Delta_position[0];
-      //position_d(1) = initial_transform.translation()[1] + 0.0005 * state.Delta_position[1];
-      //position_d(2) = initial_transform.translation()[2] + 0.0005 * state.Delta_position[2];
+      position_d(0) = initial_transform.translation()[0] + 0.0015 * state.Delta_position[0];
+      position_d(1) = initial_transform.translation()[1] - 0.0015 * state.Delta_position[2];
+      position_d(2) = initial_transform.translation()[2] + 0.0015 * state.Delta_position[1];
 
+      // TODO: Orientation
       if (state.isAnchorActive) {
-         transform = Eigen::Matrix4d::Map(state.HD_transform);
-         orientation_d = transform.linear();
+         //transform = Eigen::Matrix4d::Map(state.HD_transform);
+         //orientation_d = transform.linear();
       }
 
       // compute error to desired equilibrium pose
       // position error
       Eigen::Matrix<double, 6, 1> error;
       error.head(3) << position - position_d;
+
+      // TODO: Assign the feedback force
+      Eigen::Matrix<double, 6 ,1> Wrench_ext;
+      Wrench_ext = (stiffness * error + damping * (jacobian * dq));
+      state.Feedback_Force.set(Wrench_ext[0], Wrench_ext[2], Wrench_ext[1]);
+      //std::cout << state.Feedback_Force << std::endl;
 
       // orientation error
       // "difference" quaternion
@@ -256,6 +308,7 @@ int main(int argc, char** argv)
 
       return tau_d_array;
     };
+    ///////////////////// <END> Define torque controller callback /////////////////////////
 
     // start real-time control loop
     std::cout << "WARNING: Collision thresholds are set to high values. "
@@ -263,18 +316,18 @@ int main(int argc, char** argv)
               << "After starting try to push the robot and see how it reacts." << std::endl
               << "Press Enter to continue..." << std::endl;
     std::cin.ignore();
-    robot.control(impedance_control_callback);
 
-    ///////////////////////// <START> Creating new thread ///////////////////////
-    std::thread Check_KeyEvent_thread(Check_KeyEvent);
-    Check_KeyEvent_thread.join();
+    // pass the controller callback function ptr to the control
+    robot.control(impedance_control_callback);
 
     while (isRunning) {
       // TODO:wait....
+      std::cout << "is running3" << std::endl;
     }
+
     std::cout << "Please wait, we will quit the program..." << std::endl;
+    //exit(0);
     return 0;
-    ////////////////////////// <END> Creating new thread ////////////////////////
 
   } catch (const franka::Exception& ex) {
     // print exception
@@ -290,6 +343,8 @@ int main(int argc, char** argv)
  */
 void exitHandler()
 {
+/*
+  std::cout << "On Exit ..." << std::endl;
   hdStopScheduler();
   hdUnschedule(hUpdateDeviceCallback);
   if (ghHD != HD_INVALID_HANDLE)
@@ -297,6 +352,10 @@ void exitHandler()
     hdDisableDevice(ghHD);
     ghHD = HD_INVALID_HANDLE;
   }
+  SDL_DestroyWindow(window);
+  SDL_Quit();
+  std::cout << "Exit" << std::endl;
+*/
 }
 
 /**
@@ -306,7 +365,9 @@ void exitHandler()
  */
 void initHD()
 {
+  // To capture any HD Error message
   HDErrorInfo error;
+  // Init the HD_DEFAULT_DEVICE
   ghHD = hdInitDevice(HD_DEFAULT_DEVICE);
   if (HD_DEVICE_ERROR(error = hdGetError())) {
     hduPrintError(stderr, &error, "Failed to initialize haptic device");
@@ -315,11 +376,15 @@ void initHD()
     exit(-1);
   }
 
+  // Enable the force feedback
   hdEnable(HD_FORCE_OUTPUT);
 
+  // Creating Asynchronous callback handle
+  // TODO: See if can use nullptr to replace nUserData.
   hUpdateDeviceCallback = hdScheduleAsynchronous(
       hapticCallback, 0, HD_MAX_SCHEDULER_PRIORITY);
 
+  // Start the HD scheduler.
   hdStartScheduler();
   if (HD_DEVICE_ERROR(error = hdGetError())) {
     hduPrintError(stderr, &error, "Failed to start the scheduler");
@@ -342,6 +407,7 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
   HDdouble forceClamp;
   HDErrorInfo error;
 
+  ///////////////////// <START> HD frame //////////////////////
   hdBeginFrame(ghHD);
 
   hdGetIntegerv(HD_CURRENT_BUTTONS, &currentButtons);
@@ -373,6 +439,10 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
     hduVecSubtract(force, state.anchor, position);
     hduVecScaleInPlace(force, kAnchorStiffness);
 
+
+    force = state.Feedback_Force;
+    hduVecScaleInPlace(force, 1.0);
+
     // Clamp the force.
     hdGetDoublev(HD_NOMINAL_MAX_CONTINUOUS_FORCE, &forceClamp);
     if (hduVecMagnitude(force) > forceClamp)
@@ -393,10 +463,14 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
 
   // Render the force
   hdSetDoublev(HD_CURRENT_FORCE, force);
+  //std::cout << force << std::endl;
 
   //time_now += 0.001;
 
   hdEndFrame(ghHD);
+  ///////////////////// <END> HD frame //////////////////////
+
+
 
   if (HD_DEVICE_ERROR(error = hdGetError()))
   {
