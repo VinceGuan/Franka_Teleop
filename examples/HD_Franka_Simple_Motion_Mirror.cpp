@@ -70,6 +70,7 @@ typedef struct
 /* <Function> */
 void exitHandler();
 void initHD();
+void Check_KeyEvent();
 //
 HDCallbackCode HDCALLBACK hapticCallback(void *pUserData);
 
@@ -78,44 +79,6 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData);
 SDL_Event Event;
 HapticState state;
 SDL_Window *window = nullptr;
-
-
-/**
- * @Function Check_KeyEvent
- *  Function used to monitor the keyboard events.
- * @in Null
- * @return Null
- */
-void Check_KeyEvent ()
-{
-  std::cout << "is running1" << std::endl;
-  while (isRunning) {
-    while (SDL_PollEvent(&Event) != 0) {
-      if (Event.type == SDL_KEYDOWN) {
-        switch (Event.key.keysym.sym) {
-          case SDLK_q:
-            std::cout << "is running2" << SDL_PollEvent(&Event) << std::endl;
-            isRunning = false;
-
-            // TODO: See if can be moved in to the exit handler
-            hdStopScheduler();
-            hdUnschedule(hUpdateDeviceCallback);
-            std::cout << "Finishing ..." << std::endl;
-            if (ghHD != HD_INVALID_HANDLE)
-            {
-              hdDisableDevice(ghHD);
-              ghHD = HD_INVALID_HANDLE;
-            }
-            SDL_DestroyWindow(window);
-            SDL_Quit();
-
-            std::exit(0);
-            break;
-        }
-      }
-    }
-  }
-}
 
 
 /**
@@ -133,13 +96,12 @@ int main(int argc, char** argv)
     std::cerr << "Usage: " << argv[0] << " <robot-hostname>" << std::endl;
     return -1;
   }
-
-  // Init a window for display and
+  /// -----------------------------------------------------------------------------------
+  /////////////////////////////////// <START> Init window ///////////////////////////////
   if(SDL_Init(SDL_INIT_VIDEO) < 0) {
     std::cout << "SDL Video Initialisation Error: " << SDL_GetError() << std::endl;
   }
-  else
-  {
+  else {
     window = SDL_CreateWindow("A Window Title",SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,640,480,SDL_WINDOW_SHOWN);
     if (window == nullptr) {
       std::cout << "SDL Window Initialisation Error: " << SDL_GetError() << std::endl;
@@ -148,22 +110,32 @@ int main(int argc, char** argv)
       SDL_UpdateWindowSurface(window);
     }
   }
+  //////////////////////////////////// <END> Init window ////////////////////////////////
 
+  /// -----------------------------------------------------------------------------------
+  ////////////////// <START> Register the Exit signal handle ////////////////////////////
   if (std::atexit(exitHandler) != 0) {
     std::cout << "Failed to register the Exit Handler" << std::endl;
   }
+  /////////////////// <END> Register the Exit signal handle ///////////////////////
 
+  /// -----------------------------------------------------------------------------------
   ///////////////////////// <START> Creating new thread ///////////////////////
   std::thread Check_KeyEvent_thread(Check_KeyEvent);
   ////////////////////////// <END> Creating new thread ////////////////////////
 
-  // Init HD API and find device
+  /// -----------------------------------------------------------------------------------
+  ///////////////////////// <START> Init HD API and find device ///////////////////////
   initHD();
-  std::cout << "HDAPI initialised." << std::endl;
+  std::cout << "HDAPI Initialised." << std::endl;
+  ///////////////////////// <START> Init HD API and find device ///////////////////////
+
+  /// -----------------------------------------------------------------------------------
 
   // TODO: raise a flag of state data ready. after that we can do the control.
   std::cout << state.Delta_position << std::endl;
 
+  /// -----------------------------------------------------------------------------------
   ////////////////////////// <START> Initiate Stiffness and Damping matrix ////////////////////////
   // Compliance parameters
   const double translational_stiffness{500.0};
@@ -172,16 +144,15 @@ int main(int argc, char** argv)
   stiffness.setZero();
   stiffness.topLeftCorner(3, 3) << translational_stiffness * Eigen::MatrixXd::Identity(3, 3);
   stiffness.bottomRightCorner(3, 3) << rotational_stiffness * Eigen::MatrixXd::Identity(3, 3);
-
   // Toggle this to have a higher stiffness in the z-axis.
   //stiffness(2,2) = 10 * stiffness(2,2);
-
   damping.setZero();
   damping.topLeftCorner(3, 3) << 2.0 * sqrt(translational_stiffness) *
                                  Eigen::MatrixXd::Identity(3, 3);
   damping.bottomRightCorner(3, 3) << 2.0 * sqrt(rotational_stiffness) *
                                      Eigen::MatrixXd::Identity(3, 3);
   ////////////////////////// <END> Initiate Stiffness and Damping matrix //////////////////////////
+  /// -----------------------------------------------------------------------------------
 
   try {
     // connect to robot
@@ -198,6 +169,7 @@ int main(int argc, char** argv)
     Eigen::Vector3d position_d(initial_transform.translation());
     Eigen::Quaterniond orientation_d(initial_transform.linear());
 
+    /// -----------------------------------------------------------------------------------
     ////////////////////////// <START> For sake of Debugging /////////////////////////////
     std::cout << position_d << std::endl;
     std::cout << orientation_d.w() << "-w "
@@ -222,6 +194,7 @@ int main(int argc, char** argv)
     std::cin.ignore();
     ////////////////////////// <END> For sake of Debugging /////////////////////////////
 
+    /// -----------------------------------------------------------------------------------
     // set collision behavior
     robot.setCollisionBehavior({{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}},
                                {{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}},
@@ -231,6 +204,7 @@ int main(int argc, char** argv)
     double time = 0.0;
     std::array<double, 16> initial_pose;
 
+    /// -----------------------------------------------------------------------------------
     ////////////////// <START> Define torque controller callback ////////////////////////
     // define callback for the torque control loop
     std::function<franka::Torques(const franka::RobotState&, franka::Duration)>
@@ -268,18 +242,12 @@ int main(int argc, char** argv)
          //orientation_d = transform.linear();
       }
 
-      // compute error to desired equilibrium pose
-      // position error
+      /// compute error to desired equilibrium pose
+      /// position error
       Eigen::Matrix<double, 6, 1> error;
       error.head(3) << position - position_d;
 
-      // TODO: Assign the feedback force
-      Eigen::Matrix<double, 6 ,1> Wrench_ext;
-      Wrench_ext = (stiffness * error + damping * (jacobian * dq));
-      state.Feedback_Force.set(Wrench_ext[0], Wrench_ext[2], Wrench_ext[1]);
-      //std::cout << state.Feedback_Force << std::endl;
-
-      // orientation error
+      /// orientation error
       // "difference" quaternion
       //std::cout << orientation_d.coeffs() << std::endl;
       if (orientation_d.coeffs().dot(orientation.coeffs()) < 0.0) {
@@ -300,6 +268,16 @@ int main(int argc, char** argv)
       //tau_task.setZero();
       tau_d << tau_task + coriolis;
 
+
+      // TODO: Assign the feedback force
+      Eigen::Matrix<double, 6 ,1> Wrench_ext;
+//      Wrench_ext = (stiffness * error + damping * (jacobian * dq));
+      Wrench_ext = jacobian * tau_d;
+      const double force_feedback_ratio(-0.1);
+      state.Feedback_Force.set(force_feedback_ratio * Wrench_ext[0], force_feedback_ratio * Wrench_ext[2], force_feedback_ratio * Wrench_ext[1]);
+//      std::cout << state.Feedback_Force.magnitude() << std::endl;
+
+
       std::array<double, 7> tau_d_array{};
       Eigen::VectorXd::Map(&tau_d_array[0], 7) = tau_d;
 
@@ -310,6 +288,8 @@ int main(int argc, char** argv)
     };
     ///////////////////// <END> Define torque controller callback /////////////////////////
 
+    /// -----------------------------------------------------------------------------------
+    ////////////////// <START> Ask the user to start the control loop /////////////////////
     // start real-time control loop
     std::cout << "WARNING: Collision thresholds are set to high values. "
               << "Make sure you have the user stop at hand!" << std::endl
@@ -319,7 +299,9 @@ int main(int argc, char** argv)
 
     // pass the controller callback function ptr to the control
     robot.control(impedance_control_callback);
+    /////////////////// <END> Ask the user to start the control loop /////////////////////
 
+    /// -----------------------------------------------------------------------------------
     while (isRunning) {
       // TODO:wait....
       std::cout << "is running3" << std::endl;
@@ -338,12 +320,35 @@ int main(int argc, char** argv)
 }
 
 /**
+ * @Function Check_KeyEvent
+ *  Function used to monitor the keyboard events.
+ * @in Null
+ * @return Null
+ */
+void Check_KeyEvent ()
+{
+  std::cout << "is running1" << std::endl;
+  while (isRunning) {
+    while (SDL_PollEvent(&Event) != 0) {
+      if (Event.type == SDL_KEYDOWN) {
+        switch (Event.key.keysym.sym) {
+          case SDLK_q:
+            std::cout << "is running2" << SDL_PollEvent(&Event) << std::endl;
+            isRunning = false;
+            std::exit(0);
+            //break;
+        }
+      }
+    }
+  }
+}
+
+/**
  * @Function exitHandler()
  *  The handler get called when the application is exiting to shutdown the HD API.
  */
 void exitHandler()
 {
-/*
   std::cout << "On Exit ..." << std::endl;
   hdStopScheduler();
   hdUnschedule(hUpdateDeviceCallback);
@@ -352,10 +357,11 @@ void exitHandler()
     hdDisableDevice(ghHD);
     ghHD = HD_INVALID_HANDLE;
   }
+  std::cout << "Safely quit the haptic device ..." << std::endl;
   SDL_DestroyWindow(window);
   SDL_Quit();
-  std::cout << "Exit" << std::endl;
-*/
+  std::cout << "Safely quit the SDL and destroy the window ..." << std::endl;
+  std::cout << "Now quit ..." << std::endl;
 }
 
 /**
@@ -407,6 +413,7 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
   HDdouble forceClamp;
   HDErrorInfo error;
 
+  /// -----------------------------------------------------------------------------------
   ///////////////////// <START> HD frame //////////////////////
   hdBeginFrame(ghHD);
 
@@ -470,8 +477,7 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
   hdEndFrame(ghHD);
   ///////////////////// <END> HD frame //////////////////////
 
-
-
+  /// -----------------------------------------------------------------------------------
   if (HD_DEVICE_ERROR(error = hdGetError()))
   {
     if (hduIsForceError(&error))
