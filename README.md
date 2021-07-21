@@ -25,7 +25,7 @@ This modified version of libfranka contains no change to most of the files in `l
 
 `git clone https://github.com/VinceGuan/Franka_Teleop.git`
 
-`cd libfranka`
+`cd Franka_Teleop`
 
 4. Use CMake.
 

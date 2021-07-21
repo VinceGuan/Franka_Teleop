@@ -75,12 +75,15 @@ int main ()
       }
       else if (Event.type == SDL_JOYAXISMOTION) {
         if (Event.jaxis.axis == 5) {
+            std::cout << Event.jaxis.value << std::endl;
+          }
+        else if (Event.jaxis.axis == 1) {
           std::cout << Event.jaxis.value << std::endl;
+          }
         }
-      }
       else if (Event.type == SDL_JOYBUTTONDOWN) {
-        if (Event.jbutton.button == 0) {
-          std::cout << Event.jbutton.button << std::endl;
+          if (Event.jbutton.button == 0) {
+            std::cout << Event.jbutton.button << std::endl;
         }
       }
     }
