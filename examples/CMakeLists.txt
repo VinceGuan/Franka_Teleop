@@ -112,6 +112,10 @@ add_executable(SDL_Attempt SDL_Attempt.cpp)
 target_link_libraries(SDL_Attempt ${SDL2})
 
 
+add_executable(test_pinv_time test_pinv_time.cpp)
+target_link_libraries(test_pinv_time Eigen3::Eigen3 Threads::Threads)
+
+
 include(GNUInstallDirs)
 install(TARGETS ${EXAMPLES}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
