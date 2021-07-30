@@ -31,6 +31,8 @@ Description:
 #include <SDL2/SDL.h>
 
 #include <Eigen/Dense>
+#include <Eigen/SVD>
+#include <Eigen/QR>
 
 #include <franka/duration.h>
 #include <franka/exception.h>
@@ -75,7 +77,9 @@ void Check_KeyEvent();
 HDCallbackCode HDCALLBACK hapticCallback(void *pUserData);
 
 /* <Global> */
-//double time_now = 0;
+//Eigen::MatrixXd pinv_Eigen_SVD(Eigen::Map<const Eigen::Matrix<double, 6, 7>> map);
+Eigen::MatrixXd pinv_Eigen_SVD(Eigen::MatrixXd &origin);
+// double time_now = 0;
 SDL_Event Event;
 HapticState state;
 SDL_Window *window = nullptr;
@@ -138,8 +142,9 @@ int main(int argc, char** argv)
   /// -----------------------------------------------------------------------------------
   ////////////////////////// <START> Initiate Stiffness and Damping matrix ////////////////////////
   // Compliance parameters
-  const double translational_stiffness{500.0};
-  const double rotational_stiffness{50.0};
+  const double translational_stiffness{1000.0};
+  const double rotational_stiffness{30.0};
+  const double null_stiffness{20.0};
   Eigen::MatrixXd stiffness(6, 6), damping(6, 6);
   stiffness.setZero();
   stiffness.topLeftCorner(3, 3) << translational_stiffness * Eigen::MatrixXd::Identity(3, 3);
@@ -196,128 +201,185 @@ int main(int argc, char** argv)
 
     /// -----------------------------------------------------------------------------------
     // set collision behavior
-    robot.setCollisionBehavior({{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}},
-                               {{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}},
-                               {{100.0, 100.0, 100.0, 100.0, 100.0, 100.0}},
-                               {{100.0, 100.0, 100.0, 100.0, 100.0, 100.0}});
+    robot.setCollisionBehavior({{200.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0}},
+                               {{200.0, 200.0, 200.0, 200.0, 200.0, 200.0, 200.0}},
+                               {{200.0, 200.0, 200.0, 200.0, 200.0, 200.0}},
+                               {{200.0, 200.0, 200.0, 200.0, 200.0, 200.0}});
 
     double time = 0.0;
     std::array<double, 16> initial_pose;
+    while (1) {
+      try {
+        /// -----------------------------------------------------------------------------------
+        ////////////////// <START> Define torque controller callback ////////////////////////
+        // define callback for the torque control loop
+        std::function<franka::Torques(const franka::RobotState&, franka::Duration)>
+            impedance_control_callback = [&](const franka::RobotState& robot_state,
+                                             franka::Duration duration) -> franka::Torques {
+          // Get starting timepoint
+          auto start = std::chrono::high_resolution_clock::now();
 
-    /// -----------------------------------------------------------------------------------
-    ////////////////// <START> Define torque controller callback ////////////////////////
-    // define callback for the torque control loop
-    std::function<franka::Torques(const franka::RobotState&, franka::Duration)>
-        impedance_control_callback = [&](const franka::RobotState& robot_state,
-                                         franka::Duration duration) -> franka::Torques {
+          // get state variables
+          std::array<double, 7> coriolis_array = model.coriolis(robot_state);
+          std::array<double, 42> jacobian_array =
+              model.zeroJacobian(franka::Frame::kEndEffector, robot_state);
 
-      // get state variables
-      std::array<double, 7> coriolis_array = model.coriolis(robot_state);
-      std::array<double, 42> jacobian_array =
-          model.zeroJacobian(franka::Frame::kEndEffector, robot_state);
+          // convert to Eigen
+          Eigen::Map<const Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
+          Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+          Eigen::Map<const Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
+          Eigen::Map<const Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
+          Eigen::Map<const Eigen::Matrix<double, 6, 1>> tau_ext(robot_state.O_F_ext_hat_K.data());
+          Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+          Eigen::Affine3d transform_hd;
+          Eigen::Affine3d transform_offset;
+          Eigen::Vector3d position(transform.translation());
+          Eigen::Quaterniond orientation(transform.linear());
 
-      // convert to Eigen
-      Eigen::Map<const Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
-      Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
-      Eigen::Map<const Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
-      Eigen::Map<const Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
-      Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
-      Eigen::Vector3d position(transform.translation());
-      Eigen::Quaterniond orientation(transform.linear());
+          if (time == 0.0) {
+            initial_pose = robot_state.O_T_EE_c;
+          }
 
+          time += duration.toSec();
 
-      if (time == 0.0) {
-        initial_pose = robot_state.O_T_EE_c;
+          position_d(0) = initial_transform.translation()[0] + 0.002 * state.Delta_position[0];
+          position_d(1) = initial_transform.translation()[1] - 0.002 * state.Delta_position[2];
+          position_d(2) = initial_transform.translation()[2] + 0.002 * state.Delta_position[1];
+
+          // TODO: Orientation
+          if (state.isAnchorActive) {
+             transform_hd = Eigen::Matrix4d::Map(state.HD_transform);
+//             std::cout << transform.linear() << "  " << std::endl;
+             Eigen::AngleAxisd rot_90_x (M_PI/2, Eigen::Vector3d(1, 0, 0));
+             orientation_d = rot_90_x.toRotationMatrix() * transform_hd.linear() * rot_90_x.toRotationMatrix(); 
+//             orientation_d = (initial_transform * transform.linear()).linear();
+//             Eigen::Transform<double,3,2> t = Eigen::AngleAxis(&rotation_vector);
+             std::cout << rot_90_x.toRotationMatrix() * transform_hd.linear() * rot_90_x.toRotationMatrix() << std::endl;
+          
+           // std::cout <<  transform_hd.linear()  << std::endl;
+          }
+
+          /// compute error to desired equilibrium pose
+          /// position error
+          Eigen::Matrix<double, 6, 1> error;
+          error.head(3) << position - position_d;
+
+          /// orientation error
+          // "difference" quaternion
+          // std::cout << orientation_d.coeffs() << std::endl;
+          if (orientation_d.coeffs().dot(orientation.coeffs()) < 0.0) {
+            orientation.coeffs() << -orientation.coeffs();
+          }
+          // "difference" quaternion
+          Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d);
+          error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+          // Transform to base frame
+          error.tail(3) << -transform.linear() * error.tail(3);
+
+          // TODO: null space
+          double null_error;
+          null_error = q(0) - 0.0;
+          double task_null = null_stiffness * null_error + 2.0 * dq(0);
+
+          Eigen::MatrixXd I = Eigen::MatrixXd::Identity(7, 7);
+          Eigen::MatrixXd pinv_jacobian =
+              jacobian.transpose() * (jacobian * jacobian.transpose()).inverse();
+//                Eigen::MatrixXd pinv_jacobian = pinv_Eigen_SVD(jacob);
+//           jacobian.completeOrthogonalDecomposition().pseudoInverse();
+
+          // compute control
+          Eigen::VectorXd tau_task(7), tau_d(7);
+
+          // Spring damper system with damping ratio=1
+          tau_task << jacobian.transpose() * (-stiffness * error - damping * (jacobian * dq));
+          // tau_task.setZero();
+
+          Eigen::MatrixXd q_null = Eigen::MatrixXd::Zero(7, 1);
+          q_null(0) = -task_null;
+
+          tau_d << tau_task + coriolis +
+                       (I - jacobian.transpose() * pinv_jacobian.transpose()) * 2.0 * q_null;
+
+          //////////////////////////////////////////
+          // try this on first and then try SVD to compute.
+          // jacobian.completeOrthogonalDecomposition().pseudoInverse();
+          // pinv_Eigen_SVD(jacobian);
+          ////////////////////////////////////////////
+
+          // TODO: Assign the feedback force
+          /*Eigen::Matrix<double, 6 ,1> Wrench_ext;
+    //      Wrench_ext = (stiffness * error + damping * (jacobian * dq));
+          Wrench_ext = jacobian * tau_d;
+          const double force_feedback_ratio(-0.5);
+          state.Feedback_Force.set(force_feedback_ratio * Wrench_ext[0], force_feedback_ratio *
+    Wrench_ext[2], force_feedback_ratio * Wrench_ext[1]);
+    //      std::cout << state.Feedback_Force.magnitude() << std::endl;*/
+
+          Eigen::Matrix<double, 6, 1> Wrench_ext(tau_ext);
+          const double force_feedback_ratio(-0.1);
+          state.Feedback_Force.set(force_feedback_ratio * Wrench_ext[0],
+                                   force_feedback_ratio * Wrench_ext[2],
+                                   force_feedback_ratio * Wrench_ext[1]);
+
+          std::array<double, 7> tau_d_array{};
+          Eigen::VectorXd::Map(&tau_d_array[0], 7) = tau_d;
+
+          // Toggle this to enter the guiding mode
+          // tau_d_array = {{0,0,0,0,0,0,0}};
+
+          if (!isRunning) {
+            std::cout << "Here finishsssss" << std::endl;
+            return franka::MotionFinished(franka::Torques(tau_d_array));
+          }
+
+          auto stop = std::chrono::high_resolution_clock::now();
+
+          auto dur = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+
+//          std::cout << dur.count() << std::endl;
+
+          return tau_d_array;
+        };
+
+        ///////////////////// <END> Define torque controller callback /////////////////////////
+
+        /// -----------------------------------------------------------------------------------
+        ////////////////// <START> Ask the user to start the control loop /////////////////////
+        // start real-time control loop
+        //    std::cout << "WARNING: Collision thresholds are set to high values. "
+        //              << "Make sure you have the user stop at hand!" << std::endl
+        //              << "After starting try to push the robot and see how it reacts." << std::endl
+        //              << "Press Enter to continue..." << std::endl;
+        //    std::cin.ignore();
+
+        // pass the controller callback function ptr to the control
+        robot.control(impedance_control_callback);
+        /////////////////// <END> Ask the user to start the control loop /////////////////////
+
+      } catch (const franka::Exception& ex) {
+        // print exception
+        std::cout << ex.what() << std::endl;
+        std::cout << "Running error recovery..." << std::endl;
+        robot.automaticErrorRecovery();
       }
-
-      time += duration.toSec();
-
-      position_d(0) = initial_transform.translation()[0] + 0.0015 * state.Delta_position[0];
-      position_d(1) = initial_transform.translation()[1] - 0.0015 * state.Delta_position[2];
-      position_d(2) = initial_transform.translation()[2] + 0.0015 * state.Delta_position[1];
-
-      // TODO: Orientation
-      if (state.isAnchorActive) {
-         //transform = Eigen::Matrix4d::Map(state.HD_transform);
-         //orientation_d = transform.linear();
-      }
-
-      /// compute error to desired equilibrium pose
-      /// position error
-      Eigen::Matrix<double, 6, 1> error;
-      error.head(3) << position - position_d;
-
-      /// orientation error
-      // "difference" quaternion
-      //std::cout << orientation_d.coeffs() << std::endl;
-      if (orientation_d.coeffs().dot(orientation.coeffs()) < 0.0) {
-        orientation.coeffs() << -orientation.coeffs();
-      }
-      // "difference" quaternion
-      Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d);
-      error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
-      // Transform to base frame
-      error.tail(3) << -transform.linear() * error.tail(3);
-
-
-      // compute control
-      Eigen::VectorXd tau_task(7), tau_d(7);
-
-      // Spring damper system with damping ratio=1
-      tau_task << jacobian.transpose() * ( -stiffness * error - damping * (jacobian * dq) );
-      //tau_task.setZero();
-      tau_d << tau_task + coriolis;
-
-
-      // TODO: Assign the feedback force
-      Eigen::Matrix<double, 6 ,1> Wrench_ext;
-//      Wrench_ext = (stiffness * error + damping * (jacobian * dq));
-      Wrench_ext = jacobian * tau_d;
-      const double force_feedback_ratio(-0.1);
-      state.Feedback_Force.set(force_feedback_ratio * Wrench_ext[0], force_feedback_ratio * Wrench_ext[2], force_feedback_ratio * Wrench_ext[1]);
-//      std::cout << state.Feedback_Force.magnitude() << std::endl;
-
-
-      std::array<double, 7> tau_d_array{};
-      Eigen::VectorXd::Map(&tau_d_array[0], 7) = tau_d;
-
-      // Toggle this to enter the guiding mode
-      //tau_d_array = {{0,0,0,0,0,0,0}};
-
-      return tau_d_array;
-    };
-    ///////////////////// <END> Define torque controller callback /////////////////////////
-
-    /// -----------------------------------------------------------------------------------
-    ////////////////// <START> Ask the user to start the control loop /////////////////////
-    // start real-time control loop
-    std::cout << "WARNING: Collision thresholds are set to high values. "
-              << "Make sure you have the user stop at hand!" << std::endl
-              << "After starting try to push the robot and see how it reacts." << std::endl
-              << "Press Enter to continue..." << std::endl;
-    std::cin.ignore();
-
-    // pass the controller callback function ptr to the control
-    robot.control(impedance_control_callback);
-    /////////////////// <END> Ask the user to start the control loop /////////////////////
-
-    /// -----------------------------------------------------------------------------------
-    while (isRunning) {
-      // TODO:wait....
-      std::cout << "is running3" << std::endl;
     }
 
-    std::cout << "Please wait, we will quit the program..." << std::endl;
-    //exit(0);
-    return 0;
+    /// -----------------------------------------------------------------------------------
+//    while (isRunning) {
+//      // TODO:wait....
+//      std::cout << "is running3" << std::endl;
+//    }
 
   } catch (const franka::Exception& ex) {
     // print exception
     std::cout << ex.what() << std::endl;
   }
 
-  return 0;
+  std::cout << "Please wait, we will quit the program..." << std::endl;
+  //return 0;
+  std::exit(0);
 }
+
 
 /**
  * @Function Check_KeyEvent
@@ -399,6 +461,43 @@ void initHD()
 }
 
 /**
+ * @Function pinv_eigen_based
+ *  This is the main haptic rendering callback.  This callback will render an
+ *  anchored spring force when the user presses the button.
+ */
+Eigen::MatrixXd pinv_Eigen_SVD(Eigen::MatrixXd &origin) {
+
+  const float er = 0;
+  // perform svd decomposition
+  Eigen::JacobiSVD<Eigen::MatrixXd> svd_holder(origin, Eigen::ComputeThinU | Eigen::ComputeThinV);
+
+  // Build SVD decomposition results
+  Eigen::MatrixXd U = svd_holder.matrixU();
+  Eigen::MatrixXd V = svd_holder.matrixV();
+  Eigen::MatrixXd D = svd_holder.singularValues();
+
+  // Build the S matrix
+  Eigen::MatrixXd S(V.cols(), U.cols());
+  S.setZero();
+
+  for (unsigned int i = 0; i < D.size(); ++i) {
+
+    if (D(i, 0) > er) {
+      S(i, i) = 1 / D(i, 0);
+    } else {
+      S(i, i) = 0;
+    }
+  }
+
+  // pinv_matrix = V * S * U^T
+  return V * S * U.transpose();
+}
+
+
+
+
+
+/**
  * @Callback_Function hapticCallback
  *  This is the main haptic rendering callback.  This callback will render an
  *  anchored spring force when the user presses the button.
@@ -421,6 +520,13 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
   hdGetIntegerv(HD_LAST_BUTTONS, &lastButtons);
   hdGetDoublev(HD_CURRENT_POSITION, position);
   hdGetDoublev(HD_CURRENT_TRANSFORM, transform);
+
+//  std::cout << "------------" << std::endl;
+//  std::cout << transform[0] << "  " << transform[4] << "  " << transform[8] << std::endl;
+//  std::cout << transform[1] << "  " << transform[5] << "  " << transform[9] << std::endl;
+//  std::cout << transform[2] << "  " << transform[6] << "  " << transform[10] << std::endl;
+
+
 
   // Detect button state transitions.
   if ((currentButtons & HD_DEVICE_BUTTON_1) != 0 &&
@@ -495,6 +601,7 @@ HDCallbackCode HDCALLBACK hapticCallback(void *pUserData)
 
   return HD_CALLBACK_CONTINUE;
 }
+
 
 /* --------- End of the File ----------- */
 

@@ -23,6 +23,8 @@ add_library(examples_common STATIC
 target_link_libraries(examples_common PUBLIC Franka::Franka Eigen3::Eigen3)
 
 set(EXAMPLES
+
+  cartesian_impedance_control
   #[[
   cartesian_impedance_control
   communication_test
@@ -43,12 +45,12 @@ set(EXAMPLES
 )
 
 
-#[[
+
 foreach(example ${EXAMPLES})
   add_executable(${example} ${example}.cpp)
   target_link_libraries(${example} Franka::Franka examples_common Eigen3::Eigen3)
 endforeach()
-]]
+
 
 
 #[[
