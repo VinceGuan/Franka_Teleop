@@ -11,7 +11,7 @@ File:
   HD_Franks_Simple_Motion_Mirror.cpp
 Description:
   an example showing how to teleoperate the Franka Panda Robot using 3DSystem
-  Touch haptic device.
+  Touch haptic device. This application is currently a LTS version.
 *******************************************************************************/
 
 #include <cstdlib>
